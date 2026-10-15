@@ -1,6 +1,6 @@
 {
-  "name": "Open WebUI",
-  "short_name": "WebUI",
+  "name": "ThatAI Chat",
+  "short_name": "ThatAI",
   "icons": [
     {
       "src": "/static/web-app-manifest-192x192.png",

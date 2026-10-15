@@ -437,7 +437,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Open WebUI",
+    title="ThatAI Chat",
     docs_url="/docs" if ENV == "dev" else None,
     openapi_url="/openapi.json" if ENV == "dev" else None,
     redoc_url=None,
@@ -1435,7 +1435,7 @@ async def get_manifest_json():
         return {
             "name": app.state.WEBUI_NAME,
             "short_name": app.state.WEBUI_NAME,
-            "description": "Open WebUI is an open, extensible, user-friendly interface for AI that adapts to your workflow.",
+            "description": "ThatAI Chat is an extensible, user-friendly interface for AI that adapts to your workflow.",
             "start_url": "/",
             "display": "standalone",
             "background_color": "#343541",
