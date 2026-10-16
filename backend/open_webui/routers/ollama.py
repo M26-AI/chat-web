@@ -1142,6 +1142,9 @@ async def generate_chat_completion(
             if payload.get("options") is None:
                 payload["options"] = {}
 
+            if params.get("think") is not None:
+                payload["think"] = params["think"]
+
             payload["options"] = apply_model_params_to_body_ollama(
                 params, payload["options"]
             )

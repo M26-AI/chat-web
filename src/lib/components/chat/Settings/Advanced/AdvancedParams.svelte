@@ -35,6 +35,7 @@
 		use_mlock: null,
 		num_thread: null,
 		num_gpu: null,
+		think: null,
 		template: null
 	};
 
@@ -1114,6 +1115,42 @@
 				</div>
 			</div>
 		{/if}
+	</div>
+
+	<div>
+		<Tooltip
+			content={$i18n.t(
+				'Controls whether Ollama thinking models should generate a reasoning trace.'
+			)}
+			placement="top-start"
+			className="inline-tooltip"
+		>
+			<div class="py-0.5 flex w-full justify-between">
+				<div class="self-center text-xs font-medium">
+					{$i18n.t('Think')} {$i18n.t('(Ollama)')}
+				</div>
+				<button
+					class="p-1 px-3 text-xs flex rounded-sm transition"
+					on:click={() => {
+						params.think =
+							(params?.think ?? null) === null
+								? true
+								: params.think
+									? false
+									: null;
+					}}
+					type="button"
+				>
+					{#if params.think === true}
+						<span class="ml-2 self-center">{$i18n.t('On')}</span>
+					{:else if params.think === false}
+						<span class="ml-2 self-center">{$i18n.t('Off')}</span>
+					{:else}
+						<span class="ml-2 self-center">{$i18n.t('Default')}</span>
+					{/if}
+				</button>
+			</div>
+		</Tooltip>
 	</div>
 
 	<div class=" py-0.5 w-full justify-between">

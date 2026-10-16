@@ -68,7 +68,8 @@
 		num_batch: null,
 		num_keep: null,
 		max_tokens: null,
-		num_gpu: null
+		num_gpu: null,
+		think: null
 	};
 
 	const validateJSON = (json) => {
@@ -130,7 +131,8 @@
 				use_mmap: params.use_mmap !== null ? params.use_mmap : undefined,
 				use_mlock: params.use_mlock !== null ? params.use_mlock : undefined,
 				num_thread: params.num_thread !== null ? params.num_thread : undefined,
-				num_gpu: params.num_gpu !== null ? params.num_gpu : undefined
+				num_gpu: params.num_gpu !== null ? params.num_gpu : undefined,
+				think: params.think !== null ? params.think : undefined
 			},
 			keepAlive: keepAlive ? (isNaN(keepAlive) ? keepAlive : parseInt(keepAlive)) : undefined,
 			requestFormat: requestFormat !== null ? requestFormat : undefined
