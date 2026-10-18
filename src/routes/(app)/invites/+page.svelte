@@ -1,0 +1,9 @@
+<script lang="ts">
+	import { onMount } from 'svelte'; import { WEBUI_API_BASE_URL } from '$lib/constants';
+	let invite:any=null; let error=''; let copied=false;
+	const load=async()=>{const response=await fetch(`${WEBUI_API_BASE_URL}/usage/invites`,{headers:{Authorization:`Bearer ${localStorage.token}`}});if(!response.ok)throw new Error((await response.json()).detail);invite=await response.json()};
+	const copy=async(value:string)=>{await navigator.clipboard.writeText(value);copied=true;setTimeout(()=>copied=false,1800)};
+	onMount(()=>load().catch(e=>error=e.message));
+</script>
+<svelte:head><title>Invite Friends – ThatAI Chat</title></svelte:head>
+<main class="max-w-3xl mx-auto p-4 sm:p-8 dark:text-white"><h1 class="text-2xl font-semibold">Freunde einladen</h1><p class="mt-2 opacity-70">Teile deinen persönlichen Code und behalte deine Einladungen im Blick.</p>{#if error}<p class="mt-5 text-red-500">{error}</p>{:else if !invite}<p class="mt-6 opacity-70">Einladung wird geladen…</p>{:else}<section class="mt-6 rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-850 shadow-sm p-5 sm:p-7"><p class="text-sm font-medium opacity-70">Dein persönlicher Einladungscode</p><div class="mt-3 flex flex-col sm:flex-row gap-3"><code class="flex-1 rounded-xl bg-gray-50 dark:bg-gray-900 px-4 py-3 text-lg tracking-wide">{invite.code}</code><button class="rounded-xl bg-indigo-600 text-white px-5 py-3" on:click={()=>copy(invite.code)}>{copied?'Kopiert':'Code kopieren'}</button></div><div class="mt-5 grid grid-cols-3 gap-3 text-center"><div><b class="block text-xl">{invite.remaining}</b><span class="text-xs opacity-60">frei</span></div><div><b class="block text-xl">{invite.successful}</b><span class="text-xs opacity-60">beigetreten</span></div><div><b class="block text-xl">{invite.max_uses}</b><span class="text-xs opacity-60">Einladungen</span></div></div></section>{/if}</main>

@@ -8,6 +8,7 @@ import shutil
 import sys
 import time
 import random
+from uuid import uuid4
 
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode, parse_qs, urlparse
@@ -76,6 +77,7 @@ from open_webui.routers import (
     tools,
     users,
     utils,
+    usage,
 )
 
 from open_webui.routers.retrieval import (
@@ -250,6 +252,7 @@ from open_webui.config import (
     WEBUI_AUTH,
     WEBUI_NAME,
     WEBUI_BANNERS,
+    MAINTENANCE_MODE,
     WEBHOOK_URL,
     ADMIN_EMAIL,
     SHOW_ADMIN_DETAILS,
@@ -539,6 +542,7 @@ app.state.config.DEFAULT_USER_ROLE = DEFAULT_USER_ROLE
 app.state.config.USER_PERMISSIONS = USER_PERMISSIONS
 app.state.config.WEBHOOK_URL = WEBHOOK_URL
 app.state.config.BANNERS = WEBUI_BANNERS
+app.state.config.MAINTENANCE_MODE = MAINTENANCE_MODE
 app.state.config.MODEL_ORDER_LIST = MODEL_ORDER_LIST
 
 
@@ -924,6 +928,87 @@ async def inspect_websocket(request: Request, call_next):
     return await call_next(request)
 
 
+def _maintenance_user(request: Request):
+    """Resolve an administrator without trusting client-provided role data."""
+    token = None
+    authorization = request.headers.get("Authorization", "")
+    if authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1]
+    elif "token" in request.cookies:
+        token = request.cookies.get("token")
+
+    if not token:
+        return None
+    if token.startswith("sk-"):
+        return Users.get_user_by_api_key(token)
+
+    try:
+        data = decode_token(token)
+        return Users.get_user_by_id(data["id"]) if data and "id" in data else None
+    except Exception:
+        return None
+
+
+@app.middleware("http")
+async def enforce_maintenance_mode(request: Request, call_next):
+    maintenance = request.app.state.config.MAINTENANCE_MODE or {}
+    if not maintenance.get("enabled", False):
+        return await call_next(request)
+
+    # The maintenance page, its status poll, normal authentication flows, and
+    # Docker probes must remain reachable. All application APIs require a
+    # database-backed administrator identity while maintenance is enabled.
+    path = request.url.path
+    allowed_prefixes = (
+        "/static/", "/health", "/cache/", "/oauth/", "/api/maintenance", "/api/config",
+        "/manifest.json", "/favicon", "/robots.txt",
+    )
+    auth_paths = {
+        ("GET", "/api/v1/auths/"),  # session validation
+        ("GET", "/api/v1/auths/signout"),
+        ("POST", "/api/v1/auths/signin"),
+        ("POST", "/api/v1/auths/ldap"),
+    }
+    # Browser document requests and compiled frontend assets contain no
+    # application data. They are required to render the maintenance screen on
+    # deep links as well as at the root URL.
+    if (
+        path == "/"
+        or path.startswith(allowed_prefixes)
+        or (request.method, path) in auth_paths
+        or path.startswith(("/_app/", "/assets/"))
+        or (
+            request.method == "GET"
+            and "text/html" in request.headers.get("accept", "")
+            and not path.startswith(("/api/", "/openai", "/ollama", "/ws"))
+        )
+    ):
+        return await call_next(request)
+
+    user = _maintenance_user(request)
+    if user is not None and user.role == "admin":
+        return await call_next(request)
+
+    retry_after = None
+    estimated_end = maintenance.get("estimated_end")
+    if estimated_end:
+        try:
+            from datetime import datetime, timezone
+            end = datetime.fromisoformat(estimated_end.replace("Z", "+00:00"))
+            retry_after = max(0, int((end - datetime.now(timezone.utc)).total_seconds()))
+        except (TypeError, ValueError):
+            pass
+
+    headers = {"Cache-Control": "no-store, private"}
+    if retry_after is not None:
+        headers["Retry-After"] = str(retry_after)
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "Service temporarily unavailable", "code": "maintenance_mode"},
+        headers=headers,
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOW_ORIGIN,
@@ -970,6 +1055,7 @@ app.include_router(
     evaluations.router, prefix="/api/v1/evaluations", tags=["evaluations"]
 )
 app.include_router(utils.router, prefix="/api/v1/utils", tags=["utils"])
+app.include_router(usage.router, prefix="/api/v1/usage", tags=["usage"])
 
 
 try:
@@ -1112,6 +1198,8 @@ async def chat_completion(
             "variables": form_data.get("variables", None),
             "model": model,
             "direct": model_item.get("direct", False),
+            # Never accept a client request/message id for billing idempotency.
+            "usage_request_id": str(uuid4()),
             **(
                 {"function_calling": "native"}
                 if form_data.get("params", {}).get("function_calling") == "native"
@@ -1130,6 +1218,17 @@ async def chat_completion(
         form_data, metadata, events = await process_chat_payload(
             request, form_data, user, metadata, model
         )
+
+        # Subscription rules are evaluated server-side before the provider is called.
+        # Only models with an explicitly configured accounting rate are governed here;
+        # existing external/community models retain their prior access behaviour.
+        from open_webui.services import usage as usage_service
+        usage_metered = usage_service.begin_request(user.id, form_data.get("model"), metadata["usage_request_id"])
+        if usage_metered and form_data.get("stream"):
+            if not usage_metered.get("stream_usage_supported", False):
+                raise ValueError("Streaming is disabled for this metered model until its provider has been verified to emit final token usage")
+            # OpenAI-compatible providers emit a final usage event only when requested.
+            form_data.setdefault("stream_options", {})["include_usage"] = True
 
     except Exception as e:
         log.debug(f"Error processing chat payload: {e}")
@@ -1151,10 +1250,32 @@ async def chat_completion(
     try:
         response = await chat_completion_handler(request, form_data, user)
 
+        if usage_metered and isinstance(response, StreamingResponse):
+            # Do not release any streamed content until final provider usage is
+            # present and atomically debited. This is intentionally fail-closed.
+            response = StreamingResponse(
+                usage_service.verified_metered_stream(
+                    response.body_iterator, user.id, form_data.get("model"), metadata["usage_request_id"]
+                ),
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                background=response.background,
+            )
+
+        # Non-stream responses include factual provider token metadata. Streaming usage
+        # is handled by the response middleware when the final usage event arrives.
+        if usage_metered and not isinstance(response, StreamingResponse) and (not isinstance(response, dict) or not response.get("usage")):
+            raise ValueError("Provider did not return token usage; this accounting path is unsupported")
+        if isinstance(response, dict) and response.get("usage"):
+            provider_usage = response["usage"]
+            usage_service.charge(user.id, form_data.get("model"), provider_usage.get("prompt_tokens"), provider_usage.get("completion_tokens"), metadata["usage_request_id"])
+
         return await process_chat_response(
             request, response, form_data, user, metadata, model, events, tasks
         )
     except Exception as e:
+        if 'usage_metered' in locals() and usage_metered:
+            usage_service.release_request(user.id, metadata.get("usage_request_id"))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
@@ -1341,6 +1462,25 @@ async def get_app_config(request: Request):
             else {}
         ),
     }
+
+
+@app.get("/api/maintenance")
+async def get_maintenance_status(request: Request):
+    """Public, cache-proof data for the standalone maintenance screen."""
+    maintenance = request.app.state.config.MAINTENANCE_MODE or {}
+    return JSONResponse(
+        content={
+            "enabled": bool(maintenance.get("enabled", False)),
+            "title": maintenance.get("title") or "We’ll be right back.",
+            "description": maintenance.get("description")
+            or "ThatAI Chat is currently undergoing maintenance. We’re working on making your experience better.",
+            "estimated_end": maintenance.get("estimated_end"),
+            "reason": maintenance.get("reason"),
+            "show_estimated_end": bool(maintenance.get("show_estimated_end", True)),
+            "status": "Maintenance in progress",
+        },
+        headers={"Cache-Control": "no-store, private"},
+    )
 
 
 class UrlForm(BaseModel):

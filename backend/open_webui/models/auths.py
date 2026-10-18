@@ -88,6 +88,9 @@ class SignupForm(BaseModel):
     email: str
     password: str
     profile_image_url: Optional[str] = "/user.png"
+    # Optional during normal registration. It is required only when the
+    # administrator enables invitation-only Closed Beta registration.
+    invite_code: Optional[str] = None
 
 
 class AddUserForm(SignupForm):
@@ -193,6 +196,15 @@ class AuthsTable:
                 result = Users.delete_user_by_id(id)
 
                 if result:
+                    # An account that joined through an invitation no longer
+                    # occupies one of that code's finite places after deletion.
+                    # Keep this best-effort for installations that have not yet
+                    # applied the additive usage migration.
+                    try:
+                        from open_webui.services.usage import release_invitation_for_deleted_user
+                        release_invitation_for_deleted_user(id)
+                    except Exception as exc:
+                        log.warning(f"Unable to release invitation for deleted user {id}: {exc}")
                     db.query(Auth).filter_by(id=id).delete()
                     db.commit()
 

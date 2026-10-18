@@ -33,6 +33,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, validator
 from starlette.background import BackgroundTask
+from sqlalchemy import text
+from open_webui.internal.db import engine
 
 
 from open_webui.models.models import Models
@@ -62,6 +64,21 @@ from open_webui.constants import ERROR_MESSAGES
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["OLLAMA"])
+
+
+def reject_metered_proxy_bypass(model_id: str, user):
+    """Metered ThatAI traffic must traverse the accounting gateway."""
+    if user.role == "admin":
+        return
+    from open_webui.services import usage as usage_service
+    usage_service.bootstrap()
+    with engine.begin() as db:
+        metered = db.execute(
+            text("SELECT 1 FROM model_credit_rate WHERE (model_id=:first OR model_id=:second) AND enabled=1"),
+            {"first": model_id, "second": model_id.removesuffix(":latest")},
+        ).first()
+    if metered:
+        raise HTTPException(status_code=403, detail="Metered ThatAI models must be called through /api/chat/completions")
 
 
 ##########################################
@@ -1130,6 +1147,7 @@ async def generate_chat_completion(
         del payload["metadata"]
 
     model_id = payload["model"]
+    reject_metered_proxy_bypass(model_id, user)
     model_info = Models.get_model_by_id(model_id)
 
     if model_info:
@@ -1319,6 +1337,7 @@ async def generate_openai_chat_completion(
         del payload["metadata"]
 
     model_id = completion_form.model
+    reject_metered_proxy_bypass(model_id, user)
     if ":" not in model_id:
         model_id = f"{model_id}:latest"
 

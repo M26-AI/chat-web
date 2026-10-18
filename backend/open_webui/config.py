@@ -1271,6 +1271,23 @@ ADMIN_EMAIL = PersistentConfig(
 )
 
 
+# Maintenance is deliberately stored with the rest of the persistent WebUI
+# configuration.  Keeping this as a single object makes an update atomic from
+# the application's perspective and avoids a separate settings database.
+MAINTENANCE_MODE = PersistentConfig(
+    "MAINTENANCE_MODE",
+    "ui.maintenance",
+    {
+        "enabled": False,
+        "title": "We’ll be right back.",
+        "description": "ThatAI Chat is currently undergoing maintenance. We’re working on making your experience better.",
+        "estimated_end": None,
+        "reason": None,
+        "show_estimated_end": True,
+    },
+)
+
+
 ####################################
 # TASKS
 ####################################

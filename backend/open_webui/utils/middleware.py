@@ -1631,6 +1631,24 @@ async def process_chat_response(
                                             )
                                         usage = data.get("usage", {})
                                         if usage:
+                                            # Providers that stream usage emit it as a final
+                                            # SSE event. Debit exactly once using the chat
+                                            # message id; interrupted streams without a usage
+                                            # event are not charged rather than estimated.
+                                            try:
+                                                from open_webui.services import usage as usage_service
+                                                usage_service.charge(
+                                                    user.id,
+                                                    form_data.get("model"),
+                                                    usage.get("prompt_tokens", usage.get("input_tokens")),
+                                                    usage.get("completion_tokens", usage.get("output_tokens")),
+                                                    metadata.get("usage_request_id"),
+                                                )
+                                            except Exception as accounting_error:
+                                                # Do not leave a stale concurrency lock when a
+                                                # provider sends malformed/unsupported usage.
+                                                usage_service.release_request(user.id, metadata.get("usage_request_id"))
+                                                log.warning("Usage was not charged: %s", accounting_error)
                                             await event_emitter(
                                                 {
                                                     "type": "chat:completion",
@@ -2276,6 +2294,28 @@ async def process_chat_response(
                     yield wrap_item(json.dumps(event))
 
             async for data in original_generator:
+                # API clients without chat/session metadata take this fallback
+                # path. Meter the final provider SSE usage here as well, so a
+                # direct authenticated call cannot avoid the ledger.
+                if metadata.get("usage_request_id"):
+                    try:
+                        raw = data.decode("utf-8") if isinstance(data, bytes) else data
+                        payload = raw[len("data:") :].strip() if isinstance(raw, str) and raw.startswith("data:") else raw
+                        event_data = json.loads(payload) if isinstance(payload, str) else payload
+                        provider_usage = event_data.get("usage") if isinstance(event_data, dict) else None
+                        if provider_usage:
+                            from open_webui.services import usage as usage_service
+                            usage_service.charge(
+                                user.id, form_data.get("model"),
+                                provider_usage.get("prompt_tokens", provider_usage.get("input_tokens")),
+                                provider_usage.get("completion_tokens", provider_usage.get("output_tokens")),
+                                metadata["usage_request_id"],
+                            )
+                    except (ValueError, json.JSONDecodeError, TypeError) as accounting_error:
+                        # Non-JSON chunks are normal; malformed usage is logged
+                        # and the short reservation will be released on expiry.
+                        if "usage" in str(accounting_error).lower():
+                            log.warning("Usage was not charged: %s", accounting_error)
                 data, _ = await process_filter_functions(
                     request=request,
                     filter_functions=filter_functions,

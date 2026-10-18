@@ -1,6 +1,36 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import type { Banner } from '$lib/types';
 
+export type MaintenanceModeConfig = {
+	enabled: boolean;
+	title: string;
+	description: string;
+	estimated_end: string | null;
+	reason: string | null;
+	show_estimated_end: boolean;
+};
+
+export const getMaintenanceConfig = async (token: string): Promise<MaintenanceModeConfig> => {
+	const res = await fetch(`${WEBUI_API_BASE_URL}/configs/maintenance`, {
+		headers: { Authorization: `Bearer ${token}` }
+	});
+	if (!res.ok) throw (await res.json()).detail;
+	return res.json();
+};
+
+export const setMaintenanceConfig = async (
+	token: string,
+	maintenance: MaintenanceModeConfig
+): Promise<MaintenanceModeConfig> => {
+	const res = await fetch(`${WEBUI_API_BASE_URL}/configs/maintenance`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+		body: JSON.stringify(maintenance)
+	});
+	if (!res.ok) throw (await res.json()).detail;
+	return res.json();
+};
+
 export const importConfig = async (token: string, config) => {
 	let error = null;
 

@@ -47,12 +47,44 @@
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
 	import AppSidebar from '$lib/components/app/AppSidebar.svelte';
 	import { chatCompletion } from '$lib/apis/openai';
+	import MaintenancePage from '$lib/components/MaintenancePage.svelte';
 
 	setContext('i18n', i18n);
 
 	const bc = new BroadcastChannel('active-tab-channel');
 
 	let loaded = false;
+	let maintenance = null;
+	let maintenanceTimer;
+
+	const refreshMaintenance = async () => {
+		try {
+			const response = await fetch(`${WEBUI_BASE_URL}/api/maintenance`, {
+				credentials: 'include',
+				cache: 'no-store'
+			});
+			if (response.ok) maintenance = await response.json();
+		} catch (error) {
+			console.error('Error checking maintenance status:', error);
+		}
+	};
+
+	const disableMaintenance = async () => {
+		const current = await fetch(`${WEBUI_BASE_URL}/api/v1/configs/maintenance`, {
+			headers: { Authorization: `Bearer ${localStorage.token}` }
+		});
+		if (!current.ok) return;
+		const value = await current.json();
+		const response = await fetch(`${WEBUI_BASE_URL}/api/v1/configs/maintenance`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Authorization: `Bearer ${localStorage.token}`
+			},
+			body: JSON.stringify({ ...value, enabled: false })
+		});
+		if (response.ok) await refreshMaintenance();
+	};
 
 	const BREAKPOINT = 768;
 
@@ -504,6 +536,8 @@
 		});
 
 		let backendConfig = null;
+		await refreshMaintenance();
+		maintenanceTimer = window.setInterval(refreshMaintenance, 5000);
 		try {
 			backendConfig = await getBackendConfig();
 			console.log('Backend config:', backendConfig);
@@ -549,7 +583,7 @@
 
 						await user.set(sessionUser);
 						await config.set(await getBackendConfig());
-					} else {
+				} else if (!maintenance?.enabled) {
 						// Redirect Invalid Session User to /auth Page
 						localStorage.removeItem('token');
 						await goto(`/auth?redirect=${encodedUrl}`);
@@ -557,7 +591,7 @@
 				} else {
 					// Don't redirect if we're already on the auth page
 					// Needed because we pass in tokens from OAuth logins via URL fragments
-					if ($page.url.pathname !== '/auth') {
+					if ($page.url.pathname !== '/auth' && !maintenance?.enabled) {
 						await goto(`/auth?redirect=${encodedUrl}`);
 					}
 				}
@@ -601,6 +635,7 @@
 
 		return () => {
 			window.removeEventListener('resize', onResize);
+			window.clearInterval(maintenanceTimer);
 		};
 	});
 </script>
@@ -616,6 +651,15 @@
 </svelte:head>
 
 {#if loaded}
+	{#if maintenance?.enabled && $user?.role !== 'admin' && !$page.url.searchParams.has('maintenance-login')}
+		<MaintenancePage {maintenance} on:retry={refreshMaintenance} />
+	{:else}
+		{#if maintenance?.enabled && $user?.role === 'admin'}
+			<div class="fixed z-50 right-4 bottom-4 flex items-center gap-3 rounded-lg bg-amber-100 px-3 py-2 text-xs font-medium text-amber-950 shadow-lg dark:bg-amber-900 dark:text-amber-50">
+				<span class="size-1.5 rounded-full bg-amber-500"></span> Maintenance Mode Active
+				<button class="rounded bg-amber-950 px-2 py-1 text-amber-50 dark:bg-amber-50 dark:text-amber-950" on:click={disableMaintenance}>Disable</button>
+			</div>
+		{/if}
 	{#if $isApp}
 		<div class="flex flex-row h-screen">
 			<AppSidebar />
@@ -626,6 +670,7 @@
 		</div>
 	{:else}
 		<slot />
+	{/if}
 	{/if}
 {/if}
 

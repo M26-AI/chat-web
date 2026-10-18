@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from typing import Optional
+from datetime import datetime
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.config import get_config, save_config
@@ -11,6 +12,32 @@ from open_webui.utils.tools import get_tool_server_data, get_tool_servers_data
 
 
 router = APIRouter()
+
+
+class MaintenanceModeConfigForm(BaseModel):
+    enabled: bool = False
+    title: str = "We’ll be right back."
+    description: str = "ThatAI Chat is currently undergoing maintenance. We’re working on making your experience better."
+    estimated_end: Optional[datetime] = None
+    reason: Optional[str] = None
+    show_estimated_end: bool = True
+
+
+@router.get("/maintenance", response_model=MaintenanceModeConfigForm)
+async def get_maintenance_config(request: Request, user=Depends(get_admin_user)):
+    return request.app.state.config.MAINTENANCE_MODE
+
+
+@router.post("/maintenance", response_model=MaintenanceModeConfigForm)
+async def set_maintenance_config(
+    request: Request,
+    form_data: MaintenanceModeConfigForm,
+    user=Depends(get_admin_user),
+):
+    # model_dump(mode="json") keeps the persistent JSON config portable across
+    # SQLite, Postgres, and MySQL installations.
+    request.app.state.config.MAINTENANCE_MODE = form_data.model_dump(mode="json")
+    return request.app.state.config.MAINTENANCE_MODE
 
 
 ############################

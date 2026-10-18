@@ -22,6 +22,7 @@ from open_webui.env import (
     WEBSOCKET_SENTINEL_HOSTS,
 )
 from open_webui.utils.auth import decode_token
+from open_webui.config import MAINTENANCE_MODE
 from open_webui.socket.utils import RedisDict, RedisLock
 
 from open_webui.env import (
@@ -157,8 +158,19 @@ def get_models_in_use():
     return models_in_use
 
 
+def maintenance_blocks(user) -> bool:
+    """Socket.IO bypasses FastAPI's HTTP middleware, so enforce the same rule here."""
+    return bool(MAINTENANCE_MODE.value.get("enabled", False)) and (
+        user is None
+        or (user.get("role") if isinstance(user, dict) else user.role) != "admin"
+    )
+
+
 @sio.on("usage")
 async def usage(sid, data):
+    session = SESSION_POOL.get(sid)
+    if maintenance_blocks(session):
+        return
     model_id = data["model"]
     # Record the timestamp for the last update
     current_time = int(time.time())
@@ -181,6 +193,9 @@ async def connect(sid, environ, auth):
 
         if data is not None and "id" in data:
             user = Users.get_user_by_id(data["id"])
+
+        if maintenance_blocks(user):
+            return False
 
         if user:
             SESSION_POOL[sid] = user.model_dump()
@@ -206,7 +221,7 @@ async def user_join(sid, data):
         return
 
     user = Users.get_user_by_id(data["id"])
-    if not user:
+    if not user or maintenance_blocks(user):
         return
 
     SESSION_POOL[sid] = user.model_dump()
@@ -238,7 +253,7 @@ async def join_channel(sid, data):
         return
 
     user = Users.get_user_by_id(data["id"])
-    if not user:
+    if not user or maintenance_blocks(user):
         return
 
     # Join all the channels
@@ -250,6 +265,9 @@ async def join_channel(sid, data):
 
 @sio.on("channel-events")
 async def channel_events(sid, data):
+    session = SESSION_POOL.get(sid)
+    if maintenance_blocks(session):
+        return
     room = f"channel:{data['channel_id']}"
     participants = sio.manager.get_participants(
         namespace="/",
@@ -278,6 +296,9 @@ async def channel_events(sid, data):
 
 @sio.on("user-list")
 async def user_list(sid):
+    session = SESSION_POOL.get(sid)
+    if maintenance_blocks(session):
+        return
     await sio.emit("user-list", {"user_ids": list(USER_POOL.keys())})
 
 

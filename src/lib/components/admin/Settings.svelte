@@ -21,6 +21,7 @@
 	import Evaluations from './Settings/Evaluations.svelte';
 	import CodeExecution from './Settings/CodeExecution.svelte';
 	import Tools from './Settings/Tools.svelte';
+	import Maintenance from './Settings/Maintenance.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -69,6 +70,19 @@
 				</svg>
 			</div>
 			<div class=" self-center">{$i18n.t('General')}</div>
+		</button>
+
+		<button
+			class="px-0.5 py-1 min-w-fit rounded-lg flex-1 md:flex-none flex text-left transition {selectedTab ===
+			'maintenance'
+				? ''
+				: ' text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'}"
+			on:click={() => {
+				selectedTab = 'maintenance';
+			}}
+		>
+			<div class="self-center mr-2 text-amber-500">●</div>
+			<div class="self-center">Maintenance</div>
 		</button>
 
 		<button
@@ -402,6 +416,12 @@
 			<Evaluations />
 		{:else if selectedTab === 'tools'}
 			<Tools />
+		{:else if selectedTab === 'maintenance'}
+			<Maintenance
+				on:save={() => {
+					toast.success($i18n.t('Settings saved successfully!'));
+				}}
+			/>
 		{:else if selectedTab === 'documents'}
 			<Documents
 				on:save={async () => {

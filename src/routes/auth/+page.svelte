@@ -25,6 +25,10 @@
 	let name = '';
 	let email = '';
 	let password = '';
+	let inviteCode = '';
+	let invitePreview = null;
+	let inviteError = '';
+	let inviteChecking = false;
 
 	let ldapUsername = '';
 
@@ -61,7 +65,7 @@
 	};
 
 	const signUpHandler = async () => {
-		const sessionUser = await userSignUp(name, email, password, generateInitialsImage(name)).catch(
+		const sessionUser = await userSignUp(name, email, password, generateInitialsImage(name), inviteCode || undefined).catch(
 			(error) => {
 				toast.error(`${error}`);
 				return null;
@@ -69,6 +73,22 @@
 		);
 
 		await setSessionUser(sessionUser);
+	};
+
+	const checkInvite = async () => {
+		inviteError = '';
+		invitePreview = null;
+		inviteChecking = true;
+		try {
+			const response = await fetch(`${WEBUI_API_BASE_URL}/usage/invites/preview?code=${encodeURIComponent(inviteCode)}`);
+			const result = await response.json();
+			if (!response.ok) throw new Error(result.detail || 'Invitation code is invalid');
+			invitePreview = result;
+		} catch (error) {
+			inviteError = error.message || `${error}`;
+		} finally {
+			inviteChecking = false;
+		}
 	};
 
 	const ldapSignInHandler = async () => {
@@ -82,6 +102,9 @@
 	const submitHandler = async () => {
 		if (mode === 'ldap') {
 			await ldapSignInHandler();
+		} else if (mode === 'invite') {
+			if (!invitePreview) await checkInvite();
+			if (invitePreview?.valid) mode = 'signup';
 		} else if (mode === 'signin') {
 			await signInHandler();
 		} else {
@@ -144,6 +167,12 @@
 			goto(redirectPath);
 		}
 		await checkOauthCallback();
+		const sharedInvite = querystringValue('invite');
+		if (sharedInvite) {
+			inviteCode = sharedInvite;
+			mode = 'invite';
+			await checkInvite();
+		}
 
 		loaded = true;
 		setLogoImage();
@@ -225,8 +254,13 @@
 										{$i18n.t(`Sign in to {{WEBUI_NAME}} with LDAP`, { WEBUI_NAME: $WEBUI_NAME })}
 									{:else if mode === 'signin'}
 										{$i18n.t(`Sign in to {{WEBUI_NAME}}`, { WEBUI_NAME: $WEBUI_NAME })}
+									{:else if mode === 'invite'}
+										{$i18n.t('Enter invitation code')}
 									{:else}
 										{$i18n.t(`Sign up to {{WEBUI_NAME}}`, { WEBUI_NAME: $WEBUI_NAME })}
+									{/if}
+									{#if mode === 'invite'}
+										<div class="mt-5 text-left"><label class="text-sm font-medium" for="invite-code">{$i18n.t('Invitation code')}</label><input id="invite-code" bind:value={inviteCode} on:input={()=>{invitePreview=null;inviteError=''}} type="text" class="mt-2 w-full rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 px-3 py-3 text-sm outline-hidden" placeholder={$i18n.t('Enter invitation code')} required />{#if inviteError}<p class="mt-2 text-sm text-red-500">{inviteError}</p>{/if}{#if invitePreview}<div class="mt-3 rounded-xl bg-gray-50 dark:bg-gray-900 p-3 text-sm" class:text-red-500={!invitePreview.valid}><b>{invitePreview.valid ? $i18n.t('You have been invited by {{name}}', {name: invitePreview.creator_name}) : $i18n.t('This invitation has no places left')}</b><p class="mt-1 opacity-70">{invitePreview.valid ? `${invitePreview.remaining} ${$i18n.t('places remaining')}` : $i18n.t('The code owner has used all invitation places.')}</p></div>{/if}</div>
 									{/if}
 								</div>
 
@@ -240,7 +274,7 @@
 								{/if}
 							</div>
 
-							{#if $config?.features.enable_login_form || $config?.features.enable_ldap}
+							{#if ($config?.features.enable_login_form || $config?.features.enable_ldap) && mode !== 'invite'}
 								<div class="flex flex-col mt-4">
 									{#if mode === 'signup'}
 										<div class="mb-2">
@@ -313,7 +347,9 @@
 											class="bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
 											type="submit"
 										>
-											{mode === 'signin'
+										{mode === 'invite'
+											? (inviteChecking ? $i18n.t('Checking…') : $i18n.t('Continue'))
+											: mode === 'signin'
 												? $i18n.t('Sign in')
 												: ($config?.onboarding ?? false)
 													? $i18n.t('Create Admin Account')
@@ -330,8 +366,8 @@
 													class=" font-medium underline"
 													type="button"
 													on:click={() => {
-														if (mode === 'signin') {
-															mode = 'signup';
+													if (mode === 'signin') {
+														mode = 'invite';
 														} else {
 															mode = 'signin';
 														}
@@ -340,6 +376,9 @@
 													{mode === 'signin' ? $i18n.t('Sign up') : $i18n.t('Sign in')}
 												</button>
 											</div>
+											{#if mode === 'signin'}
+												<button class="mt-3 text-sm font-medium underline" type="button" on:click={()=>{mode='invite';invitePreview=null;inviteError=''}}>{$i18n.t('Do you have an invitation code?')}</button>
+											{/if}
 										{/if}
 									{/if}
 								{/if}

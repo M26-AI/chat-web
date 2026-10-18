@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
+from sqlalchemy import text
+from open_webui.internal.db import engine
 
 from open_webui.models.models import Models
 from open_webui.config import (
@@ -601,6 +603,15 @@ async def generate_chat_completion(
     metadata = payload.pop("metadata", None)
 
     model_id = form_data.get("model")
+    # Metered ThatAI models must use the gateway, which captures final provider
+    # usage and enforces the ledger. This closes the provider-proxy bypass while
+    # preserving direct access to existing non-metered admin/custom models.
+    from open_webui.services import usage as usage_service
+    usage_service.bootstrap()
+    with engine.begin() as usage_db:
+        metered = usage_db.execute(text("SELECT 1 FROM model_credit_rate WHERE model_id=:m AND enabled=1"), {"m": model_id}).first()
+    if metered and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Metered ThatAI models must be called through /api/chat/completions")
     model_info = Models.get_model_by_id(model_id)
 
     # Check model info and override the payload

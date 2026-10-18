@@ -37,6 +37,12 @@
 			align="start"
 			transition={(e) => fade(e, { duration: 100 })}
 		>
+			<a class="flex rounded-md py-2 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition" href="/usage" on:click={() => (show = false)}>
+				<div class="self-center mr-3">◔</div><div class="self-center truncate">Usage &amp; Credits</div>
+			</a>
+			<a class="flex rounded-md py-2 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition" href="/invites" on:click={() => (show = false)}>
+				<div class="self-center mr-3">✉</div><div class="self-center truncate">Invite Friends</div>
+			</a>
 			<button
 				class="flex rounded-md py-2 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition"
 				on:click={async () => {

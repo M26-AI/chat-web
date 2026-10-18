@@ -3,6 +3,7 @@ import uuid
 import time
 import datetime
 import logging
+import json
 from aiohttp import ClientSession
 
 from open_webui.models.auths import (
@@ -449,6 +450,25 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
     if Users.get_user_by_email(form_data.email.lower()):
         raise HTTPException(400, detail=ERROR_MESSAGES.EMAIL_TAKEN)
 
+    # Do this after all inexpensive eligibility checks so invalid requests never
+    # consume a beta invite. The conditional update is the race-safe reservation.
+    from open_webui.internal.db import engine
+    from sqlalchemy import text
+    invite = None
+    with engine.begin() as invite_db:
+        invitation_only = invite_db.execute(text("SELECT value FROM usage_setting WHERE key='invitation_only'")) .scalar()
+        # In public mode a code remains optional and is treated as a referral;
+        # in Closed Beta the exact same personal code grants admission.
+        if (invitation_only and str(invitation_only).lower() in ('true', '1')) or form_data.invite_code:
+            if not form_data.invite_code:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, detail="An invitation code is required during Closed Beta")
+            invite = invite_db.execute(text("SELECT * FROM invite_code WHERE code=:code AND revoked=0"), {"code": form_data.invite_code.strip().upper()}).mappings().first()
+            if not invite:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Invitation code is invalid or exhausted")
+            reserved = invite_db.execute(text("UPDATE invite_code SET uses=uses+1 WHERE id=:id AND uses < max_uses"), {"id": invite['id']})
+            if reserved.rowcount != 1:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Invitation code is exhausted")
+
     try:
         role = (
             "admin" if user_count == 0 else request.app.state.config.DEFAULT_USER_ROLE
@@ -475,6 +495,31 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
         )
 
         if user:
+            # Registration and redemption are protected by a unique user_id in
+            # invite_redemption. This records beta access only; no paid reward.
+            if invite:
+                with engine.begin() as invite_db:
+                    invite_db.execute(text("INSERT INTO invite_redemption (id,invite_id,user_id,created_at) VALUES (:id,:invite,:user,:now)"), {"id": str(uuid.uuid4()), "invite": invite['id'], "user": user.id, "now": int(time.time())})
+                    # Every account has a durable shareable personal code.  The
+                    # service also makes this idempotent for OAuth-created users.
+                    from open_webui.services import usage as usage_service
+                    usage_service.ensure_personal_invite(invite_db, user.id)
+                    referral_rewards = invite_db.execute(text("SELECT value FROM usage_setting WHERE key='referral_rewards_enabled'")).scalar()
+                    if invite.get('creator_id') and invite['creator_id'] != user.id and str(referral_rewards).lower() in ('true', '1'):
+                        days_raw = invite_db.execute(text("SELECT value FROM usage_setting WHERE key='referral_reward_days'")).scalar()
+                        try:
+                            days = max(1, min(365, int(json.loads(days_raw) if days_raw else 14)))
+                        except Exception:
+                            days = 14
+                        # A unique redemption makes rewards one-time. Promotions
+                        # are appended after current/scheduled access, never erase it.
+                        for rewarded_user in (user.id, invite['creator_id']):
+                            start = usage_service.promotional_start(invite_db, rewarded_user)
+                            invite_db.execute(text("INSERT INTO user_subscription (id,user_id,tier_id,status,access_status,billing_status,starts_at,ends_at,created_at,updated_at) VALUES (:id,:u,'plus','promotional',:access,'none',:start,:end,:now,:now)"), {"id":str(uuid.uuid4()), "u":rewarded_user, "access":'active' if start <= int(time.time()) else 'scheduled', "start":start, "end":start+days*86400, "now":int(time.time())})
+            else:
+                with engine.begin() as invite_db:
+                    from open_webui.services import usage as usage_service
+                    usage_service.ensure_personal_invite(invite_db, user.id)
             expires_delta = parse_duration(request.app.state.config.JWT_EXPIRES_IN)
             expires_at = None
             if expires_delta:
@@ -531,6 +576,10 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
         else:
             raise HTTPException(500, detail=ERROR_MESSAGES.CREATE_USER_ERROR)
     except Exception as err:
+        # Return a pre-reserved beta invite if creating the account itself failed.
+        if 'invite' in locals() and invite:
+            with engine.begin() as invite_db:
+                invite_db.execute(text("UPDATE invite_code SET uses=CASE WHEN uses>0 THEN uses-1 ELSE 0 END WHERE id=:id"), {"id": invite['id']})
         log.error(f"Signup error: {str(err)}")
         raise HTTPException(500, detail="An internal error occurred during signup.")
 
